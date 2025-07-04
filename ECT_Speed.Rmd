@@ -1,0 +1,455 @@
+---
+title: "A systematic review and meta-analysis of speed of response in electro-convulsive
+  therapy augmentation for schizophrenia"
+author: "Makarand Pantoji, Srinivas Balachander, Jagadisha Thirthalli"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+<br>
+
+#### Load the required packages:
+
+```{r packages, message=FALSE, warning=FALSE}
+library(dplyr)
+
+library(metafor)
+library(meta)
+
+library(ggplot2)
+library(grid)
+```
+
+<br>
+<br>
+
+#### Load and have a look at the dataset:
+
+```{r loadviewdata, message=FALSE, warning=FALSE}
+
+df <- read.csv("ECT_SOR_Dataset.csv")
+
+df
+```
+
+- mean1, sd1, n1 are for ECT+AP group, while mean2, sd2 and n2 are for the AP-only group. 
+
+<br>
+<br>
+  
+#### Calculating within-group effect sizes for each week:
+
+```{r efsizes}
+df.eff <- data.frame(matrix(ncol=8))  # Blank data frame to store the effect sizes
+colnames(df.eff) <- c("Study", "Week", "g1", "v1", "g2", "v2", "n1", "n2")
+
+studies <- unique(df$Study)       # Get list of studies & weeks to run a loop
+weeks <- sort(unique(df$Week))
+weeks <- weeks[-1]                # Remove Week "0" from this list
+
+# Running the for loop to calculate all within group effect sizes
+
+for(i in studies){
+  for(j in weeks){
+    
+    if(is.na(df[df$Study == i & df$Week == j, "mean1"][1])) {next}
+    
+    # Get all the values for calculating g & v in Group 1
+    m1 <- df[df$Study == i &  df$Week == 0, "mean1"] 
+    m2 <- df[df$Study == i & df$Week == j, "mean1"]
+    sd1 <- df[df$Study == i &  df$Week == 0, "SD1"]
+    sd2 <- df[df$Study == i &  df$Week == j, "SD1"]
+    n1 <-  df[df$Study == i &  df$Week == j, "n1"]
+    
+    # Calculate Hedge's g  
+   
+    g1 <- ((m1 - m2)/sqrt((sd1^2 + sd2^2)/2))*sqrt((n1-2)/(n1-1))
+  
+    # Calculate variance of Hedge's g
+    sig2.d <- sd1^2 + sd2^2 - 2*0.5*sd1*sd2
+    sig4 <- ((sd1^2 + sd2^2)/2)^2
+    sdc.1 <- (g1^2*(sd1^4 + sd2^4 + 2*0.5*(sd1^2)*(sd2^2))/(8*(n1-1)*sig4))
+    sdc.2 <- sig2.d/(sqrt(sig4)*(n1-1))
+    
+    v1 <- sdc.1 + sdc.2
+    
+    #------------------------------
+    
+    # Get all the values for calculating g & v in Group 2
+    m1 <- df[df$Study == i &  df$Week == 0, "mean2"]
+    m2 <- df[df$Study == i & df$Week == j, "mean2"]
+    sd1 <- df[df$Study == i &  df$Week == 0, "SD2"]
+    sd2 <- df[df$Study == i &  df$Week == j, "SD2"]
+    n2 <- df[df$Study == i &  df$Week == j, "n2"]
+    
+    # Calculate Hedge's g  
+    
+    g2 <- ((m1 - m2)/sqrt((sd1^2 + sd2^2)/2))*sqrt((n2-2)/(n2-1))
+    
+    # Calculate variance of Hedge's g in Group1 
+    sig2.d <- sd1^2 + sd2^2 - 2*0.5*sd1*sd2
+    sig4 <- ((sd1^2 + sd2^2)/2)^2
+    sdc.1 <- (g2^2*(sd1^4 + sd2^4 + 2*0.5*(sd1^2)*(sd2^2))/(8*(n2-1)*sig4))
+    sdc.2 <- sig2.d/(sqrt(sig4)*(n2-1))
+    
+    v2 <- sdc.1 + sdc.2
+    
+    result <- c(i, j, g1, v1, g2, v2, n1, n2 )
+    
+    # Ask the loop to ignore weeks that are absent for that study
+    if(length(result) == 2){next}       
+    
+    df.eff <- rbind(df.eff, result)
+    
+  }
+  rm(g1, g2, v1, v2, n1, n2, m1, m2, sd1, sd2, i, j, result, sdc.1, sdc.2, sig2.d, sig4)
+}
+
+# Clean up the data-frame with the calculated effect-sizes
+df.eff <- df.eff[-1, ]
+df.eff[,-1] <- lapply(df.eff[,-1], function(x) as.numeric(x) )
+
+```
+
+<br>
+
+#### Visualise the effect sizes at each time point, data and graphs
+
+```{r visefs}
+
+ggplot(df.eff, mapping = aes(x=Week, y= g1, color = Study, group = Study)) + 
+  geom_point() + 
+  geom_line() + 
+  geom_errorbar(aes(ymin = g1 - v1, ymax = g1 + v1)) +
+  scale_x_continuous(breaks = 1:28) + ggtitle("ECT+AP")
+
+ggplot(df.eff, mapping = aes(x=Week, y= g2, color = Study, group = Study)) + 
+  geom_point() + 
+  geom_line() + 
+  geom_errorbar(aes(ymin = g2 - v2, ymax = g2 + v2)) +
+  scale_x_continuous(breaks = 1:28) + ggtitle("AP only")
+
+```
+<br>
+
+
+<br>
+
+#### Running a separate meta-analysis for each time-point
+
+This is a for-loop, that will do a random-effects model meta-analysis comparing the BSL-Post effect sizes at each time-point across the studies. All the results get saved into a single list called "rmas". Then, there's a function to make a separate forest plot for each time point.
+
+```{r wkly.ma}
+rmas <- list()
+
+rma.wkly <- function(x) {metacont(n.e = n1, mean.e = g1, sd.e = sqrt(v1), 
+                                  n.c = n2, mean.c = g2, sd.c = sqrt(v2),
+                                  studlab = Study,
+                                  data = df.eff[df.eff$Week == x &
+                                                  !is.na(df.eff$g1),],
+                                  sm = "SMD", method.smd= "Hedges", 
+                                  common = FALSE, 
+                                  tau.common = FALSE)}
+
+
+rma.wkly.forest <- function(x) {meta::forest(x, label.right = "Favors ECT+AP", 
+                                             label.left= "Favors AP Only", 
+                                       leftlabs =  c("Study", "N", "SMC", 
+                                                     "SD",  "N", "SMC", "SD"),
+                                       digits = 3, digits.mean = 3,
+                                       digits.sd = 3, digits.stat = 3,
+                                       hetstat= TRUE) 
+                                 grid.text(paste("Week", x[["data"]][["Week"]]), .5, .9, gp=gpar(cex=2))}
+
+for(i in weeks) {rmas[[paste("Week", i)]] <- rma.wkly(i)}
+
+```
+
+<br>
+
+#### Forest plots for each week
+
+The forest plots graphs shown below will show how many studies are available for each week, and what the effect sizes comparing the two groups are like.
+
+```{r fig.width=10}
+for(i in weeks) {rma.wkly.forest(rmas[[paste("Week", i)]])}
+```
+
+#### Synthesising all into one table
+
+```{r }
+
+rmas.table <- data.frame(Week = NA, k = NA, n = NA, smd = NA, CI = NA, pval = NA, 
+                         I2 = NA, CI.I2 = NA)
+
+for(i in weeks) {
+  rma.obj <- rmas[[paste("Week", i)]]
+  
+  tab.row <-  data.frame(Week = i,
+               k = rma.obj$k.all,
+               n = rma.obj$n.e.pooled + rma.obj$n.c.pooled,
+               smd = round(rma.obj$TE.random, 3),
+               CI = paste0("(", round(rma.obj$lower.random, 3), " - ", 
+                                round(rma.obj$upper.random, 3) , ")"),
+               pval = round(rma.obj$pval.random, 3),
+               I2 = paste0(round(rma.obj$I2*100), "%"),
+               CI.I2 = paste0("(", round(rma.obj$lower.I2*100), "% - ", 
+                                round(rma.obj$upper.I2*100) , "%)")
+                 )
+  
+  rmas.table <- rbind(rmas.table, tab.row)
+}
+
+rmas.table <- rmas.table[-1,]
+
+rmas.table %>% kableExtra::kable(format = "pipe", row.names = FALSE)
+
+```
+
+# Funnel Plots for each week
+
+```{r}
+
+rmas.bias <- function(x) {if(x$k.all < 3) {next}
+  
+                      y.egg <- meta::metabias(x, k.min = 3)
+                      y.egg.res <- paste0("b = ", 
+                         round(y.egg$estimate, digits = 2)[1], 
+                         " (", 
+                         round(y.egg$estimate, digits = 2)[2], 
+                         ")",
+                         ", p = ", 
+                         round(y.egg$p.value, digits = 3))
+                      
+                    meta::funnel(x, xlab = y.egg.res, studlab = TRUE, cex.studlab = 0.4, pos.studlab = 3)}
+
+
+for(i in weeks) {rmas.bias(rmas[[paste("Week", i)]])}
+
+```
+
+We need to decide how many weeks to include in the multi-variate/mixed-model meta-analysis, which is our primary analysis to look at the speed of response. 
+
+<br>
+
+I have made the following table/graphs to show what the trajectories of the pooled within-group effect sizes at each week are like. There is a function called "meta-mean" to just pool the pre-post effect sizes, taking their variance into consideration. This was done separately for the ECT+AP and the AP-only group.
+
+```{r pooling.wg}
+# Pooling within-groups effect sizes in each arm at each week:
+
+df.wg <- data.frame(matrix(ncol=9))
+colnames(df.wg) <- c("Week", "gp1", "sep1", "gp2", "sep2", "np1", "np2", "k1", "k2")
+
+for(j in weeks) { x1= metamean(n = n1, mean = g1, sd = sqrt(v1), 
+                               studlab = Study,data = df.eff[df.eff$Week ==j,])
+                  x2= metamean(n = n2, mean = g2, sd = sqrt(v2), 
+                               studlab = Study,data = df.eff[df.eff$Week ==j,])
+                 np1 <- sum(x1$n) %>% round
+                 np2 <- sum(x2$n) %>% round
+  
+                 gp1 <- x1$TE.random %>% round(digits = 3)
+                 gp2 <- x2$TE.random %>% round(digits = 3)
+                 
+                 sep1 <- x1$seTE.random %>% round(digits = 3)
+                 sep2 <- x2$seTE.random %>% round(digits = 3)
+                 
+                 k1 <- x1$k.study %>% round
+                 k2 <- x2$k.study %>% round
+                 
+                out <-  c(j, gp1, sep1, gp2, sep2, np1, np2, k1, k2)
+                df.wg <- rbind(df.wg, out)
+                
+                rm(j, gp1, sep1, gp2, sep2, np1, np2, k1, k2, x1, x2)
+                
+                }
+
+df.wg <- df.wg[-1,]
+
+df.wg
+```
+
+Columns gp1 and sep1 indicate "pooled g" and "pooled se" for ECT+AP group, similarly for the others. n and k indicate the total subjects allocated, total number of studies available, etc.
+
+
+```{r reshaping.wg, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+df.wg.long <- reshape(df.wg, varying= list(c("gp1", "gp2"), 
+                                           c("sep1", "sep2"), 
+                                           c("np1", "np2"), 
+                                           c("k1", "k2")),
+                      v.names = c("g", "se", "n", "k"),
+                      timevar = "Group",
+                      idvar = "Week",
+                      times = c(1,2),
+                      direction = "long" ) 
+
+
+df.wg.long$Group <- factor(df.wg.long$Group, labels = c("ECT+AP", "AP Only"))
+
+
+pd = position_dodge(0.3)
+```
+
+<br>
+<br>
+
+#### Graphs comparing the pooled effect sizes at each time-point between the two groups
+
+
+Plotting all available time-points. After 8 weeks, most of the time points after that have only 2 studies. The primary aim of the study is only short term-response, planned analysis is up to 8 weeks only.
+
+
+```{r final.graphs1 }
+ggplot(df.wg.long, mapping=aes(x=Week, y=g, ymin = g-se, 
+                               ymax=g+se, group = Group, 
+                               color= Group)) +
+  geom_errorbar(width=0.75, position = pd) +
+  geom_point(position = pd, size = 2) +
+  geom_line(position = pd, linetype = 2) +
+  scale_x_continuous(name="Weeks", breaks = seq(0,28,1)) +
+  scale_y_continuous(name = "Pooled Hedge's g (SE)", limits = c(0,6)) + 
+  theme_bw()
+```
+
+
+Graph of response comparing ECT+AP vs AP alone from 1 - 8 weeks
+
+```{r final.graphs2}
+ggplot(df.wg.long[df.wg.long$Week <10,], 
+       mapping=aes(x=Week, y=g, ymin = g-se, ymax=g+se, group = Group, color= Group)) +
+  geom_errorbar(width=0.5, position = pd) +
+  geom_point(position = pd, size = 2) +
+  geom_line(position = pd, linetype = 2) +
+  scale_x_continuous(name="Weeks", breaks = seq(0,8,1)) +
+  scale_y_continuous(name = "Pooled Hedge's g (SE)", limits = c(0,6), breaks = seq(0,6,1)) + 
+  theme_bw()
+```
+
+
+```{r reshaping2, include=FALSE}
+
+df.eff$ID <- 1:nrow(df.eff)
+
+df.long <- reshape(df.eff, varying = list(c("g1","g2"),
+                                          c("v1","v2"),
+                                          c("n1","n2")),
+                   v.names = c("g", "v", "n"),
+                   timevar = "Group",
+                   idvar = "ID",
+                   times = c(1,2),
+                   direction="long")
+
+
+df.long$Group <- recode(df.long$Group, `1` = "ECT+AP", `2` = "AP only")
+
+df.long <- df.long[,-3]
+
+```
+
+<br>
+<br>
+
+### Multivariate meta-analysis
+
+<br>
+
+```{r mvma.2}
+
+x <- rma.mv(g ~ Group*Week, v,  random = ~ Week|Study,
+       struct ="HAR", data=df.long[df.long$Week < 9,])
+
+x
+```
+
+
+### Meta-regression and Sensitivity Analyses
+
+```{r}
+# Add the sensitivity analysis columns to df.eff and df.long
+
+df.eff <- merge(df.eff, 
+                 df[!duplicated(df$Study) ,
+                    c("Study", "HighROB", "ShamECT", "TRS")], by = "Study", all.x = TRUE)
+
+df.long <- merge(df.long, 
+                 df[!duplicated(df$Study) ,
+                    c("Study", "HighROB", "ShamECT", "TRS")], by = "Study", all.x = TRUE)
+
+
+```
+
+
+### Meta-Regression: 
+
+#### Sham Controls
+
+```{r mvma.3}
+
+rma.mv(g ~ ShamECT + Group*Week, v,  random = ~ Week|Study,
+       struct ="HAR", data=df.long[df.long$Week < 9,])
+
+```
+
+### TRS/Clozapine resistance
+
+```{r mvma.4}
+
+rma.mv(g ~ TRS + Group*Week, v,  random = ~ Week|Study,
+       struct ="HAR", data=df.long[df.long$Week < 9,])
+
+```
+
+#### Excluding High ROB Studies
+
+```{r}
+
+rmas.rob <- list()
+
+rmas.rob.wkly <- function(x) {metacont(n.e = n1, mean.e = g1, sd.e = sqrt(v1), 
+                                  n.c = n2, mean.c = g2, sd.c = sqrt(v2),
+                                  studlab = Study,
+                                  data = df.eff[df.eff$Week == x & df.eff$HighROB == 0 &
+                                                  !is.na(df.eff$g1),],
+                                  sm = "SMD", method.smd= "Hedges", 
+                                  fixed = FALSE, 
+                                  tau.common = FALSE)}
+
+for(i in weeks[1:8]) {rmas.rob[[paste("Week", i)]] <- rmas.rob.wkly(i)}
+
+
+for(i in weeks[1:8]) {rma.wkly.forest(rmas.rob[[paste("Week", i)]])}
+```
+
+```{r }
+
+rmas.rob.table <- data.frame(Week = NA, k = NA, n = NA, smd = NA, CI = NA, pval = NA, 
+                         I2 = NA, CI.I2 = NA)
+
+for(i in weeks[1:8]) {
+  rma.obj <- rmas.rob[[paste("Week", i)]]
+  
+  tab.row <-  data.frame(Week = i,
+               k = rma.obj$k.all,
+               n = rma.obj$n.e.pooled + rma.obj$n.c.pooled,
+               smd = round(rma.obj$TE.random, 3),
+               CI = paste0("(", round(rma.obj$lower.random, 3), " - ", 
+                                round(rma.obj$upper.random, 3) , ")"),
+               pval = round(rma.obj$pval.random, 3),
+               I2 = paste0(round(rma.obj$I2*100), "%"),
+               CI.I2 = paste0("(", round(rma.obj$lower.I2*100), "% - ", 
+                                round(rma.obj$upper.I2*100) , "%)")
+                 )
+  
+  rmas.rob.table <- rbind(rmas.rob.table, tab.row)
+}
+
+rmas.rob.table <- rmas.rob.table[-1,]
+
+rmas.rob.table %>% kableExtra::kable(format = "pipe", row.names = FALSE)
+
+```
+
+
+
